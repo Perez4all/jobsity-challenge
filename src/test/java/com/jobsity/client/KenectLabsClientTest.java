@@ -2,46 +2,61 @@ package com.jobsity.client;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
 import com.jobsity.client.dto.KenectContact;
 import com.jobsity.client.dto.KenectContactResponse;
 import com.jobsity.exception.KenectClientException;
-import okhttp3.mockwebserver.MockWebServer;
-import okhttp3.mockwebserver.MockResponse;
+
+import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.mockito.Mockito;
-import org.springframework.http.MediaType;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cloud.contract.spec.internal.HttpStatus;
+import org.springframework.cloud.contract.spec.internal.MediaTypes;
+import org.springframework.http.HttpHeaders;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.test.StepVerifier;
 
-import java.io.IOException;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 
+import static com.github.tomakehurst.wiremock.client.WireMock.*;
+import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.wireMockConfig;
+
+@Slf4j
+@SpringBootTest
+@ExtendWith(MockitoExtension.class)
 public class KenectLabsClientTest {
 
-    private static final String URL = "dummy-contacts-url";
+    private static final String BEARER_TOKEN = "skjdakj234j23adas-dummy";
 
     private static WebClient webClient;
-
-    public static MockWebServer mockWebServer;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private KenectLabsClient kenectLabsClient;
 
+    @RegisterExtension
+    static WireMockExtension wireMockExtension = WireMockExtension.newInstance()
+            .options(wireMockConfig().dynamicPort()).build();
+
     @BeforeAll
-    static void setup() throws IOException {
-        mockWebServer = new MockWebServer();
-        mockWebServer.start();
-        webClient = Mockito.spy(WebClient.builder().baseUrl(mockWebServer
-                        .url(URL).toString())
-                .build());
+    public static void setup(){
+        webClient = Mockito.spy(WebClient.builder()
+                .defaultHeader("Authorization", "Bearer " + BEARER_TOKEN)
+                .baseUrl(wireMockExtension.baseUrl()).build());
     }
 
     @BeforeEach
     public void init(){
         kenectLabsClient = new KenectLabsClientImpl(webClient);
+        ReflectionTestUtils.setField(kenectLabsClient, "CONTACTS_PATH", "/contacts");
     }
 
     @Test
@@ -58,9 +73,13 @@ public class KenectLabsClientTest {
         KenectContactResponse kenectContactResponse = new KenectContactResponse();
         kenectContactResponse.setContacts(Collections.singletonList(kenectContact));
 
-        mockWebServer.enqueue(new MockResponse().setResponseCode(200)
-                .setBody(objectMapper.writeValueAsString(kenectContactResponse))
-                .addHeader("Content-Type", MediaType.APPLICATION_JSON));
+        wireMockExtension.stubFor(get(urlPathEqualTo("/contacts"))
+                .withHeader(HttpHeaders.AUTHORIZATION, equalTo("Bearer " + BEARER_TOKEN ))
+                .withQueryParam("page", equalTo("1"))
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", MediaTypes.APPLICATION_JSON)
+                        .withBody(objectMapper.writeValueAsString(new KenectContactResponse(
+                                Collections.singletonList(kenectContact))))));
 
         Flux<KenectContact> contactsByPage = kenectLabsClient.getContactsByPage(1);
 
@@ -94,28 +113,39 @@ public class KenectLabsClientTest {
         kenectContact2.setCreated_at(createdAt);
         kenectContact2.setUpdated_at(createdAt);
 
-        mockWebServer.enqueue(new MockResponse().setResponseCode(200)
-                .addHeader("Total-Pages", 2)
-                .addHeader("Content-Type", "application/json"));
+        //Simulating/Mocking Kenect API
+        wireMockExtension.stubFor(head(urlPathEqualTo("/contacts"))
+                                .willReturn(aResponse()
+                                        .withHeader("Total-Pages", "2")));
 
-        mockWebServer.enqueue(new MockResponse().setResponseCode(200)
-                .setBody(objectMapper.writeValueAsString(new KenectContactResponse(Collections.singletonList(kenectContact))))
-                .addHeader("Content-Type", "application/json"));
+        wireMockExtension.stubFor(get(urlPathEqualTo("/contacts"))
+                .withHeader(HttpHeaders.AUTHORIZATION, equalTo("Bearer " + BEARER_TOKEN ))
+                .withQueryParam("page", equalTo("1"))
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", MediaTypes.APPLICATION_JSON)
+                        .withBody(objectMapper.writeValueAsString(new KenectContactResponse(
+                                Collections.singletonList(kenectContact))))));
 
-        mockWebServer.enqueue(new MockResponse().setResponseCode(200)
-                .setBody(objectMapper.writeValueAsString(new KenectContactResponse(Collections.singletonList(kenectContact2))))
-                .addHeader("Content-Type", "application/json"));
+        wireMockExtension.stubFor(get(urlPathEqualTo("/contacts"))
+                .withHeader(HttpHeaders.AUTHORIZATION, equalTo("Bearer " + BEARER_TOKEN))
+                .withQueryParam("page", equalTo("2"))
+                .willReturn(aResponse()
+                        .withHeader("Content-Type", MediaTypes.APPLICATION_JSON)
+                        .withBody(objectMapper.writeValueAsString(new KenectContactResponse(
+                                Collections.singletonList(kenectContact2))))));
 
         Flux<KenectContact> allContacts = kenectLabsClient.getAllContacts();
 
-        StepVerifier.create(allContacts)
+        StepVerifier.create(allContacts.sort(Comparator.comparing(KenectContact::getId)))
                 .assertNext(kc -> {
+                            System.out.println(kc);
                     Assertions.assertInstanceOf(KenectContact.class, kc);
                     Assertions.assertEquals(1, kc.getId());
                     Assertions.assertEquals("dummy", kc.getName());
                 }
                 )
                 .assertNext(kc -> {
+                            System.out.println(kc);
                     Assertions.assertInstanceOf(KenectContact.class, kc);
                     Assertions.assertEquals(2, kc.getId());
                     Assertions.assertEquals("dummy2", kc.getName());
@@ -123,14 +153,18 @@ public class KenectLabsClientTest {
                 ).verifyComplete();
 
         Mockito.verify(webClient, Mockito.times(1)).head();
-        Mockito.verify(webClient, Mockito.times(3)).get();
+        Mockito.verify(webClient, Mockito.times(2)).get();
+
     }
 
     @Test
     void testGetContactsNoResults() throws JsonProcessingException {
 
-        mockWebServer.enqueue(new MockResponse().setResponseCode(500)
-                .addHeader("Content-Type", MediaType.APPLICATION_JSON));
+        wireMockExtension.stubFor(get(urlPathEqualTo("/contacts"))
+                .withHeader(HttpHeaders.AUTHORIZATION, equalTo("Bearer " + BEARER_TOKEN ))
+                .withQueryParam("page", equalTo("999"))
+                .willReturn(aResponse()
+                        .withStatus(HttpStatus.INTERNAL_SERVER_ERROR)));
 
         Flux<KenectContact> contactsByPage = kenectLabsClient.getContactsByPage(999);
 
@@ -140,9 +174,9 @@ public class KenectLabsClientTest {
         Mockito.verify(webClient, Mockito.times(1)).get();
     }
 
-    @AfterAll
-    static void destroy() throws IOException {
-        mockWebServer.shutdown();
+    @AfterEach
+    public void clear(){
+        Mockito.clearInvocations(webClient);
     }
 
 }

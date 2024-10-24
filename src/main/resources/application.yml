@@ -4,6 +4,6 @@ kenect:
     auth:
       token: J7ybt6jv6pdJ4gyQP9gNonsY
     contacts:
-      path: contacts
+      path: /contacts
       defaultPaging: 20
     source: KENECT_LABS

@@ -3,19 +3,23 @@ package com.jobsity.client;
 import com.jobsity.client.dto.KenectContact;
 import com.jobsity.client.dto.KenectContactResponse;
 import com.jobsity.exception.KenectClientException;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.util.UriBuilder;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import java.net.URI;
 import java.util.Comparator;
 import java.util.List;
 
+@Slf4j
 @Component
 public class KenectLabsClientImpl implements KenectLabsClient{
 
@@ -53,7 +57,8 @@ public class KenectLabsClientImpl implements KenectLabsClient{
     @Override
     public Flux<KenectContact> getAllContacts(){
        return webClient.head().uri(builder -> buildUrl(builder, null)).retrieve()
-               .toEntity(ResponseEntity.class)
+               .toBodilessEntity()
+               .map(ResponseEntity::getHeaders)
                .flatMapMany(this::getFluxFromPageRange)
                .flatMap(this::getContactsByPage)
                .sort(Comparator.comparing(KenectContact::getId));
@@ -61,11 +66,11 @@ public class KenectLabsClientImpl implements KenectLabsClient{
 
     /**
      * To create multiple requests per page
-     * @param responseEntity Response entity to get headers
+     * @param headers Response entity headers
      * @return a Flux of pages
      */
-    private Flux<Integer> getFluxFromPageRange(ResponseEntity<?> responseEntity){
-        List<String> totalPages = responseEntity.getHeaders().get("Total-Pages");
+    private Flux<Integer> getFluxFromPageRange(HttpHeaders headers){
+        List<String> totalPages = headers.get("Total-Pages");
         if(totalPages != null) {
             int pages = Integer.parseInt(totalPages.get(0));
             return Flux.range(1, pages);
